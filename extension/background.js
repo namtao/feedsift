@@ -1,21 +1,18 @@
-// Service worker: runs every Facebook task for the manager page, the scheduled runs, and learns
-// fresh doc_ids from the requests Facebook's own web app sends.
+// Service worker: scores posts for the page filter (content/filter.js), runs the Facebook friends,
+// pages and groups lists for the manager page, and learns fresh doc_ids from the requests Facebook's
+// own web app sends.
 
 import * as account from './lib/account.js';
 import * as db from './lib/db.js';
-import { SessionExpired, apiSession, ensureHeaderRule, sleep, uniform } from './lib/fb.js';
+import { activeCooldown, apiSession, clearCooldown, ensureHeaderRule, sleep, uniform } from './lib/fb.js';
 import * as ops from './lib/ops.js';
-import { collectFeed, scanSources } from './lib/scan.js';
-import { chat, scorePending } from './lib/scorer.js';
-import { getSettings, getSources, llmReady, saveSettings, saveSources, telegramReady } from './lib/settings.js';
-import * as telegram from './lib/telegram.js';
+import { chat, scoreRows } from './lib/scorer.js';
+import { getSettings, llmReady, saveSettings } from './lib/settings.js';
 
 const MANAGER = chrome.runtime.getURL('manager.html');
 // Facebook flags accounts that unfriend/leave/unfollow in bulk, so actions go slowly and in small daily batches.
 const ACTION_DELAY = [30e3, 90e3];
 const DAILY_ACTION_LIMIT = 10;
-const MIN_FEED_POSTS = 5; // fewer from the home feed usually means Facebook changed its layout
-const RUN_JITTER_MS = 30 * 60e3;
 const REMOTE_REFRESH_MIN = 360;
 
 // list kind -> {action: [label, flag]}. An action without a flag removes the item from the list;
@@ -29,7 +26,6 @@ const ACTIONS = {
     mute_group: ['Tắt thông báo', 'muted'],
   },
 };
-const SOURCE_KINDS = { pages: 'page', groups: 'group' };
 
 // Registered synchronously at top level so a request wakes the worker.
 chrome.webRequest.onBeforeRequest.addListener(ops.observe, { urls: ['https://*.facebook.com/api/graphql/*'] }, ['requestBody']);
@@ -48,18 +44,6 @@ async function saveList(kind, items, updated) {
   return data;
 }
 
-async function setSources(kind, ids, on) {
-  const sourceKind = SOURCE_KINDS[kind];
-  const wanted = new Set(ids.map(String));
-  const sources = (await getSources()).filter((x) => !(x.kind === sourceKind && wanted.has(x.id)));
-  if (on) {
-    for (const i of (await loadList(kind)).items) {
-      if (wanted.has(i.id)) sources.push({ kind: sourceKind, id: i.id, name: i.name, url: i.url });
-    }
-  }
-  return saveSources(sources);
-}
-
 // --- One Facebook task at a time -----------------------------------------------------------------
 
 let busy = false;
@@ -70,7 +54,7 @@ const publicJob = () => Object.fromEntries(Object.entries(job).filter(([k]) => k
 async function exclusive(fn) {
   if (busy) throw new Error('Đang có một tác vụ chạy; chờ xong hoặc bấm Dừng.');
   busy = true;
-  // An extension API call every 20 s keeps the worker alive through long sleeps and LLM calls.
+  // An extension API call every 20 s keeps the worker alive through long sleeps.
   const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(), 20e3);
   try {
     return await fn();
@@ -146,140 +130,8 @@ async function startActions(kind, method, ids) {
         continue;
       }
       await saveList(kind, cache.items.filter((i) => i.id !== id), cache.updated);
-      if (SOURCE_KINDS[kind]) await setSources(kind, [id], false);
     }
   });
-}
-
-// Collect (chosen sources, else the home feed), store, score with the LLM, optionally send the digest.
-function startScan(sendDigest) {
-  return getSources().then((sources) => launch('posts', 'Quét bài', (sources.length || 1) + 1 + (sendDigest ? 1 : 0),
-    async (j) => {
-      const s = await getSettings();
-      const started = db.now();
-      const counts = { collected: 0, added: 0 };
-      let status = 'error';
-      let note = '';
-      j.current = 'Mở Facebook';
-      try {
-        const ctx = await apiSession();
-        if (sources.length) {
-          await scanSources(ctx, sources, s.sourceDays, async (src, posts) => {
-            counts.collected += posts.length;
-            counts.added += await db.addPosts(posts);
-            j.done++;
-            j.current = src.name;
-          }, () => j.cancel);
-          // Keep the page profile ids resolved during this scan for the next one.
-          const resolved = new Map(sources.filter((x) => x.profile_id).map((x) => [x.id, x.profile_id]));
-          await saveSources((await getSources()).map((x) => (resolved.has(x.id) ? { ...x, profile_id: resolved.get(x.id) } : x)));
-        } else {
-          j.current = 'Lấy bài trên feed trang chủ';
-          const feed = await collectFeed(ctx, (n) => { j.current = `Lấy bài trên feed trang chủ: ${n} bài`; }, () => j.cancel);
-          counts.collected = feed.posts.length;
-          counts.added = await db.addPosts(feed.posts);
-          j.done++;
-          if (feed.stopped) note = `Dừng sớm sau ${counts.collected} bài: ${feed.stopped}`;
-        }
-        // A few posts in the window is normal for chosen pages/groups; only an empty scan is suspicious.
-        const minimum = sources.length ? 1 : MIN_FEED_POSTS;
-        status = j.cancel ? 'cancelled' : counts.collected < minimum ? 'too_few' : 'ok';
-        if (status === 'too_few' && !note) {
-          j.warning = note = `Chỉ thu được ${counts.collected} bài (ngưỡng ${minimum}). Có thể Facebook đổi giao diện hoặc không tải thêm bài khi cuộn.`;
-        }
-      } catch (err) {
-        status = err instanceof SessionExpired ? 'session_expired' : 'error';
-        note = err.message;
-        throw err;
-      } finally {
-        // Logged even when stopped or failed: the posts tab marks what the latest run found.
-        await db.logRun(started, counts.collected, counts.added, status, note);
-      }
-      if (j.cancel) return;
-      const parts = [`${counts.collected} bài, ${counts.added} bài mới`];
-      if (note) parts.push(note);
-      j.done = sources.length || 1;
-      if (llmReady(s)) {
-        j.current = 'Chấm điểm bằng LLM';
-        parts.push(`chấm điểm ${await scorePending(s)} bài`);
-      } else {
-        parts.push('chưa chấm điểm vì chưa cấu hình LLM');
-      }
-      j.done++;
-      if (sendDigest) {
-        j.current = 'Gửi digest Telegram';
-        if (!telegramReady(s)) parts.push('chưa gửi digest vì chưa cấu hình Telegram');
-        else {
-          const rows = await db.digestCandidates(s.scoreThreshold);
-          if (rows.length) {
-            await telegram.sendDigest(s, rows);
-            await db.markSent(rows.map((r) => r.id));
-          }
-          parts.push(`gửi ${rows.length} bài qua Telegram`);
-        }
-        j.done++;
-      }
-      j.summary = parts.join(', ');
-    }));
-}
-
-// --- Scheduled runs ------------------------------------------------------------------------------
-
-function parseTimes(text) {
-  return String(text || '').split(/[,;\s]+/).map((t) => t.match(/^(\d{1,2})[:h](\d{2})$/))
-    .filter((m) => m && +m[1] < 24 && +m[2] < 60).map((m) => [+m[1], +m[2]]);
-}
-
-function slots(times, now) {
-  const out = [];
-  for (const dayOffset of [-1, 0, 1]) {
-    for (const [h, m] of times) {
-      const d = new Date(now);
-      d.setDate(d.getDate() + dayOffset);
-      d.setHours(h, m, 0, 0);
-      out.push(d.getTime());
-    }
-  }
-  return out.sort((a, b) => a - b);
-}
-
-async function ensureSchedule() {
-  await chrome.alarms.clear('auto-run');
-  const s = await getSettings();
-  const times = parseTimes(s.runTimes);
-  if (!s.autoRun || !times.length) return;
-  const now = Date.now();
-  const { lastAutoRun, autoRunEnabledAt } = await chrome.storage.local.get(['lastAutoRun', 'autoRunEnabledAt']);
-  const previous = slots(times, now).filter((t) => t <= now).at(-1);
-  const anchor = Math.max(lastAutoRun?.at || 0, autoRunEnabledAt || 0);
-  // Like a persistent timer: a slot missed while the browser was closed runs soon after startup.
-  const when = anchor && anchor < previous
-    ? now + 60e3
-    : slots(times, now).find((t) => t > now) + Math.random() * RUN_JITTER_MS;
-  await chrome.alarms.create('auto-run', { when });
-}
-
-async function autoRun() {
-  if (busy) {
-    await chrome.alarms.create('auto-run', { when: Date.now() + 10 * 60e3 });
-    return;
-  }
-  const s = await getSettings();
-  const record = { at: Date.now(), status: 'ok', note: '' };
-  try {
-    const j = await (await startScan(telegramReady(s) && llmReady(s))).done;
-    record.note = j.summary;
-    if (j.warning) await telegram.alert(s, j.warning);
-  } catch (err) {
-    record.status = 'error';
-    record.note = err.message;
-    await telegram.alert(s, err instanceof SessionExpired
-      ? `Facebook yêu cầu đăng nhập/xác minh. Mở Facebook trên trình duyệt để đăng nhập lại. (${err.message})`
-      : `Lượt chạy tự động lỗi: ${err.message}`);
-  } finally {
-    await chrome.storage.local.set({ lastAutoRun: record });
-    await ensureSchedule();
-  }
 }
 
 async function refreshRemoteOps() {
@@ -291,13 +143,11 @@ async function refreshRemoteOps() {
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'auto-run') autoRun();
   if (alarm.name === 'remote-ops') refreshRemoteOps();
 });
 
 async function setup() {
   await chrome.alarms.create('remote-ops', { periodInMinutes: REMOTE_REFRESH_MIN });
-  await ensureSchedule();
   await refreshRemoteOps();
 }
 
@@ -319,13 +169,70 @@ async function openManager() {
 
 chrome.action.onClicked.addListener(openManager);
 
+// --- Messages from the page filter (content/filter.js) -------------------------------------------
+
+const PLATFORMS = ['fb', 'x'];
+const platformOf = (msg) => (PLATFORMS.includes(msg.platform) ? msg.platform : 'fb');
+
+// The settings one site's filter needs, without the platform prefix.
+async function filterSettings(platform) {
+  const s = await getSettings();
+  const p = platform === 'x' ? 'x' : 'fb';
+  const on = (name) => s[`${p}Hide${name}`];
+  return {
+    settings: {
+      enabled: s[`${p}Enabled`], scoring: s.scoreEnabled, hideBelow: s.hideBelow, showBadges: s.showBadges,
+      holdUntilScored: s.holdUntilScored, llm: llmReady(s),
+      hideAds: on('Ads'), hideVideos: on('Videos'),
+      hideFriendSuggestions: p === 'fb' && on('FriendSuggestions'), hideSuggested: p === 'fb' && on('Suggested'),
+      hideNotFollowed: p === 'fb' && on('NotFollowed'), hideGroupSuggestions: p === 'fb' && on('GroupSuggestions'),
+      hideGrok: p === 'x' && on('Grok'),
+    },
+  };
+}
+
+// Score posts [{id, text}] seen on the page. A score is cached against the post and the interests, so
+// scrolling back, reloading or seeing a reshare never asks the LLM twice.
+async function scorePosts(posts) {
+  const s = await getSettings();
+  if (!llmReady(s)) throw new Error('Chưa cấu hình LLM');
+  const scope = (await db.sha1(s.interests.trim())).slice(0, 12);
+  const rows = await Promise.all(posts.map(async (p) => ({
+    id: p.id, text: String(p.text), key: `${await db.postKey(String(p.text))}:${scope}`,
+  })));
+  const cached = await db.getScores(rows.map((r) => r.key));
+  const items = rows.filter((r) => cached.has(r.key)).map((r) => ({ ...cached.get(r.key), id: r.id }));
+  const todo = rows.filter((r) => !cached.has(r.key));
+  if (todo.length) {
+    const fresh = await scoreRows({ ...s, llmModel: s.filterModel || s.llmModel }, todo);
+    const keys = new Map(todo.map((r) => [r.id, r.key]));
+    await db.putScores(fresh.filter((i) => keys.has(i.id)).map((i) => ({ key: keys.get(i.id), item: i })));
+    items.push(...fresh);
+  }
+  return { items };
+}
+
+const FILTER_MESSAGES = {
+  'filter-settings': (msg) => filterSettings(platformOf(msg)),
+  score: (msg) => scorePosts(msg.posts || []),
+  'filter-set': async (msg) => { await saveSettings({ [`${platformOf(msg)}Enabled`]: !!msg.enabled }); return {}; },
+};
+
+chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+  const run = sender.id === chrome.runtime.id && sender.tab && FILTER_MESSAGES[msg?.type];
+  if (!run) return false;
+  run(msg).then(
+    (data) => reply({ ok: true, ...data }),
+    (err) => reply({ ok: false, error: err.message || String(err) }),
+  );
+  return true;
+});
+
 // --- Messages from the manager page --------------------------------------------------------------
 
 async function saveAllSettings(patch) {
   const before = await getSettings();
   const s = await saveSettings(patch);
-  if (s.autoRun && !before.autoRun) await chrome.storage.local.set({ autoRunEnabledAt: Date.now() });
-  await ensureSchedule();
   if (s.remoteOpsUrl !== before.remoteOpsUrl) await refreshRemoteOps();
   return s;
 }
@@ -338,12 +245,8 @@ async function testLlm(patch) {
   return { reply: String(reply).slice(0, 200) };
 }
 
-async function postsView() {
-  const s = await getSettings();
-  return {
-    items: await db.recentPosts(), days: s.sourceDays, threshold: s.scoreThreshold,
-    last_run: (await db.lastRun())?.started_at || null, llm: llmReady(s), telegram: telegramReady(s),
-  };
+async function safety() {
+  return { cooldown: await activeCooldown(), actions: (await actionsToday()).count, limit: DAILY_ACTION_LIMIT };
 }
 
 async function route(path, body) {
@@ -360,18 +263,11 @@ async function route(path, body) {
   switch (path) {
     case 'job': return publicJob();
     case 'job/cancel': job.cancel = true; return publicJob();
-    case 'sources': return body ? setSources(body.kind, body.ids || [], !!body.on) : getSources();
-    case 'posts': return postsView();
-    case 'posts/skip':
-      await db.setSkipped((body.ids || []).map(Number), !!body.skip);
-      return { ok: true };
-    case 'scan': {
-      const { job: j, done } = await startScan(!!body?.digest);
-      done.catch(() => {}); // the error is shown through the job
-      return j;
-    }
+    case 'fb/safety': return safety();
+    case 'fb/safety/clear':
+      await clearCooldown();
+      return safety();
     case 'settings': return body ? saveAllSettings(body) : getSettings();
-    case 'settings/auto-run': return (await chrome.storage.local.get('lastAutoRun')).lastAutoRun || null;
     case 'llm/test': return testLlm(body || {});
     case 'ops': return ops.status();
     case 'ops/refresh':

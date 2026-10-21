@@ -1,7 +1,7 @@
 // List and clean up friends, followed pages and joined groups via Facebook's own GraphQL API.
 // Everything runs from the service worker (see fb.js), so no tab or window opens.
 
-import { FB, FacebookError, fetchPage, first, gql, sleep, uniform } from './fb.js';
+import { FB, FacebookError, FacebookHalt, fetchPage, first, gql, sleep, uniform } from './fb.js';
 
 const GROUP_ATTRIBUTION = 'CometGroupDiscussionRoot.react,comet.group,via_cold_start,,,,,';
 // Facebook flags accounts that fire bursts of GraphQL requests, so list reads go one at a time.
@@ -96,7 +96,7 @@ async function joinedGroups(ctx) {
         (d) => d.viewer?.groups_tab?.tab_groups_list);
       joined.push(...nodes.map((n) => [n, admin]));
     } catch (err) {
-      if (!admin) throw err; // the admin list type is optional
+      if (!admin || err instanceof FacebookHalt) throw err; // the admin list type is optional
     }
   }
   return joined;
@@ -128,6 +128,7 @@ export async function groups(ctx) {
       }
     }
   } catch (err) {
+    if (err instanceof FacebookHalt) throw err;
     console.warn('Reading when groups were last visited failed', err.message);
   }
   await readGroupSettings(ctx, [...byId.values()]);
@@ -154,6 +155,7 @@ async function readGroupSettings(ctx, groups) {
         && first(notif, 'viewer_push_subscription_level', (v) => typeof v === 'string') === 'OFF';
       ok++;
     } catch (err) {
+      if (err instanceof FacebookHalt) throw err;
       failed++;
       console.warn(`Reading settings of group ${g.name} failed`, err.message);
     }
@@ -197,6 +199,7 @@ export async function leave_group(ctx, groupId) {
       await mutate(ctx, key, input, extra, (d) => Object.values(d).some(Boolean));
       return;
     } catch (err) {
+      if (err instanceof FacebookHalt) throw err;
       replies.push(err.message);
     }
   }

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "FB Digest",
+  "name": "FeedSift",
   "version": "0.1.0",
-  "description": "Dọn bạn bè, trang, nhóm Facebook; quét bài từ nguồn bạn chọn, chấm điểm bằng LLM và gửi digest Telegram.",
+  "description": "Sàng feed Facebook và X ngay khi bạn lướt: ẩn quảng cáo, video, gợi ý, bài hỏi Grok, và chấm điểm bài theo sở thích bằng LLM.",
   "minimum_chrome_version": "116",
   "icons": {
     "16": "icons/icon-16.png",
@@ -10,7 +10,7 @@
     "128": "icons/icon-128.png"
   },
   "action": {
-    "default_title": "FB Digest",
+    "default_title": "FeedSift",
     "default_icon": {
       "16": "icons/icon-16.png",
       "48": "icons/icon-48.png"
@@ -22,19 +22,32 @@
   },
   "permissions": [
     "storage",
-    "unlimitedStorage",
     "alarms",
-    "scripting",
     "webRequest",
     "declarativeNetRequestWithHostAccess"
   ],
   "host_permissions": [
     "https://*.facebook.com/*",
-    "https://api.telegram.org/*",
     "https://gist.githubusercontent.com/*"
   ],
   "optional_host_permissions": [
     "https://*/*",
     "http://*/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.facebook.com/*",
+        "https://x.com/*",
+        "https://twitter.com/*"
+      ],
+      "js": [
+        "content/filter.js"
+      ],
+      "css": [
+        "content/filter.css"
+      ],
+      "run_at": "document_idle"
+    }
   ]
 }

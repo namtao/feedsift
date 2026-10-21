@@ -1,39 +1,10 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const daysText = (d) => d == null ? '' : d < 1 ? 'hôm nay' : `${Math.round(d)} ngày trước`;
-const ago = (iso) => {
-  const min = (Date.now() - new Date(iso)) / 60000;
-  if (min < 60) return `${Math.max(1, Math.round(min))} phút trước`;
-  if (min < 1440) return `${Math.round(min / 60)} giờ trước`;
-  return `${Math.round(min / 1440)} ngày trước`;
-};
 const avatar = (r, square) => r.avatar ? `<img class="av${square ? ' square' : ''}" src="${esc(r.avatar)}" loading="lazy" referrerpolicy="no-referrer" alt="">` : '<span class="av"></span>';
 const nameLink = (r) => r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.name)}</a>` : esc(r.name);
 
 const KINDS = {
-  posts: {
-    label: 'Bài viết', readonly: true, search: ['text', 'summary', 'author', 'source'],
-    sort: { key: 'posted_at', dir: -1 },
-    columns: [
-      { key: 'posted_at', label: 'Thời gian', render: (r) => `<span title="${esc(new Date(r.posted_at).toLocaleString('vi-VN'))}${r.exact_time ? '' : ' (giờ thu bài)'}">${ago(r.posted_at)}${r.exact_time ? '' : '*'}</span>` },
-      { key: 'source', label: 'Nguồn', render: (r) => esc(r.source) },
-      { key: 'score', label: 'Điểm', num: true, render: (r) => r.score == null ? '<span class="meta">chưa chấm</span>' : `<span class="badge ${r.score >= state.threshold ? 'good' : ''}">${r.score}</span>` },
-      { key: 'author', label: 'Bài viết', wrap: true, render: (r) =>
-          `<strong>${esc(r.author || '')}</strong>${r.is_ad ? ' <span class="badge">QC</span>' : ''}` +
-          `<div>${esc(r.summary || '')}</div>` +
-          (r.summary ? '' : `<div class="post-text">${esc((r.text || '').slice(0, 280))}</div>`) +
-          (r.link ? ` <a href="${esc(r.link)}" target="_blank" rel="noopener">Mở bài ↗</a>` : '') },
-      { key: 'skipped', label: '', nosort: true, render: (r) => `<button class="btn small" data-skip>${r.skipped ? 'Hiện lại' : 'Bỏ qua'}</button>` },
-    ],
-    filters: [
-      { type: 'check', key: 'latest', label: 'Chỉ bài mới quét', default: true },
-      { type: 'check', key: 'from_source', label: 'Chỉ bài từ nguồn đã chọn', default: true },
-      { type: 'min', key: 'score', label: 'Điểm ≥' },
-      { type: 'select', key: 'source', label: 'Nguồn' },
-      { type: 'not', key: 'is_ad', label: 'Ẩn quảng cáo', default: true },
-      { type: 'not', key: 'skipped', label: 'Ẩn bài đã bỏ qua', default: true },
-    ],
-  },
   friends: {
     label: 'Bạn bè', actions: { unfriend: { label: 'Hủy kết bạn', danger: true } }, search: ['name'],
     columns: [
@@ -51,7 +22,7 @@ const KINDS = {
     ],
   },
   pages: {
-    label: 'Trang', actions: { unfollow_page: { label: 'Bỏ theo dõi', danger: true } }, source: 'page', search: ['name', 'category'],
+    label: 'Trang', actions: { unfollow_page: { label: 'Bỏ theo dõi', danger: true } }, search: ['name', 'category'],
     columns: [
       { key: 'avatar', label: '', nosort: true, render: (r) => avatar(r) },
       { key: 'name', label: 'Tên', render: nameLink },
@@ -61,12 +32,11 @@ const KINDS = {
       { key: 'id', label: 'ID' },
     ],
     filters: [
-      { type: 'source', label: 'Chỉ nguồn quét' },
       { type: 'select', key: 'category', label: 'Loại' },
     ],
   },
   groups: {
-    label: 'Nhóm', source: 'group', search: ['name'],
+    label: 'Nhóm', search: ['name'],
     // "flag" is set on a row once the action succeeded; the row then stays in the list.
     actions: {
       leave_group: { label: 'Rời nhóm', danger: true },
@@ -84,20 +54,32 @@ const KINDS = {
       { key: 'id', label: 'ID' },
     ],
     filters: [
-      { type: 'source', label: 'Chỉ nguồn quét' },
       { type: 'min', key: 'visited_days', label: 'Không vào ≥ (ngày)' },
       { type: 'min', key: 'last_post_days', label: 'Không có bài mới ≥ (ngày)' },
     ],
   },
 };
 
+// Settings pages, grouped by what they apply to: both sites, Facebook only, X only.
+const PAGES = {
+  common: { label: 'Chung', hint: 'Facebook và X', scope: 'both', mark: '✱', title: 'Cài đặt chung', scopeText: 'Áp dụng cho cả Facebook và X',
+            sub: 'Chấm điểm bằng AI, kết nối AI và sở thích. Các quy tắc ẩn bài nằm ở mục Facebook và X.' },
+  fb: { label: 'Facebook', hint: 'Lọc khi lướt', scope: 'fb', mark: 'f', title: 'Lọc trên Facebook', scopeText: 'Chỉ áp dụng khi lướt facebook.com',
+        sub: 'Chọn loại bài cần ẩn ngay trên feed.' },
+  x: { label: 'X (Twitter)', hint: 'Lọc khi lướt', scope: 'x', mark: 'X', title: 'Lọc trên X', scopeText: 'Chỉ áp dụng khi lướt x.com',
+       sub: 'Chọn loại bài cần ẩn ngay trên dòng thời gian.' },
+  conn: { label: 'Kết nối và an toàn', hint: 'Cho Bạn bè, Trang, Nhóm', scope: 'fb', mark: 'f', title: 'Kết nối và an toàn', scopeText: 'Chỉ áp dụng cho các mục quản lý Facebook',
+          sub: 'Thời gian nghỉ khi Facebook phản ứng và mã thao tác doc_id.' },
+};
+const LIST_META = { friends: 'Hủy kết bạn', pages: 'Bỏ theo dõi trang', groups: 'Rời nhóm, tắt thông báo' };
+const isSettings = (k) => k in PAGES;
+
 const store = {
   get: (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
   set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
 };
-// Always land on the posts list; the filters typed in earlier are remembered per tab.
-const state = { kind: 'posts', mode: store.get('mode', 'row'), data: {}, selected: {}, sort: {}, filters: {},
-                search: '', sources: [], threshold: 7, days: 3, lastRun: null, llm: true, telegram: true };
+// Open on the first settings page; the filters typed in the lists are remembered per tab.
+const state = { kind: 'common', mode: store.get('mode', 'row'), data: {}, selected: {}, sort: {}, filters: {}, search: '' };
 for (const [k, v] of Object.entries(KINDS)) {
   state.selected[k] = new Set();
   state.sort[k] = v.sort || { key: 'name', dir: 1 };
@@ -113,7 +95,6 @@ async function api(path, body) {
   return res.data;
 }
 function showError(msg) { $('error').hidden = !msg; $('error').textContent = msg || ''; }
-const isSource = (r) => state.sources.some((s) => s.kind === KINDS[state.kind].source && s.id === r.id);
 
 function rows() {
   const kind = KINDS[state.kind], f = state.filters[state.kind];
@@ -124,7 +105,6 @@ function rows() {
       const v = f[flt.key ?? flt.type];
       if (v === undefined || v === '' || v === false) continue;
       const x = r[flt.key];
-      if (flt.type === 'source' && !isSource(r)) return false;
       if (flt.type === 'check' && !x) return false;
       if (flt.type === 'not' && x) return false;
       if (flt.type === 'max' && (x == null || x > +v)) return false;
@@ -145,11 +125,12 @@ function rows() {
 }
 
 function renderFilters() {
+  if (!KINDS[state.kind]) return;
   const kind = KINDS[state.kind], f = state.filters[state.kind];
   const items = state.data[state.kind]?.items || [];
   $('filters').innerHTML = kind.filters.map((flt) => {
     const key = flt.key ?? flt.type;
-    if (['check', 'not', 'source'].includes(flt.type)) return `<label class="filter"><input type="checkbox" data-filter="${key}" ${f[key] ? 'checked' : ''}> ${flt.label}</label>`;
+    if (['check', 'not'].includes(flt.type)) return `<label class="filter"><input type="checkbox" data-filter="${key}" ${f[key] ? 'checked' : ''}> ${flt.label}</label>`;
     if (flt.type === 'select') {
       const opts = [...new Set(items.map((r) => r[key]).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'vi'));
       return `<label class="filter">${flt.label} <select data-filter="${key}"><option value="">Tất cả</option>${opts.map((o) => `<option ${o === f[key] ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></label>`;
@@ -159,58 +140,56 @@ function renderFilters() {
 }
 
 function renderTabs() {
-  $('tabs').innerHTML = Object.entries(KINDS).map(([k, v]) => {
-    const n = state.data[k]?.items?.length;
-    return `<button class="tab" role="tab" data-kind="${k}" aria-selected="${k === state.kind}">${v.label}${n != null ? ` <span class="n">${n}</span>` : ''}</button>`;
-  }).join('') + `<button class="tab" role="tab" data-kind="settings" aria-selected="${state.kind === 'settings'}">Cài đặt</button>`;
+  const item = (k, label, hint, scope, mark, n) => `<button class="tab" role="tab" data-kind="${k}" aria-selected="${k === state.kind}">`
+    + `<span class="mark ${scope}">${mark}</span><span>${label}<small>${hint}</small></span>${n != null ? `<span class="n">${n}</span>` : ''}</button>`;
+  const page = (k) => item(k, PAGES[k].label, PAGES[k].hint, PAGES[k].scope, PAGES[k].mark);
+  const list = (k) => item(k, KINDS[k].label, LIST_META[k], 'fb', 'f', state.data[k]?.items?.length);
+  $('tabs').innerHTML = '<div class="navgroup">Bộ lọc khi lướt</div>' + page('common') + page('fb') + page('x')
+    + '<div class="navgroup">Quản lý Facebook</div>' + Object.keys(KINDS).map(list).join('') + page('conn');
+}
+
+function renderHead() {
+  const p = PAGES[state.kind];
+  const [title, scope, mark, sub, text] = p
+    ? [p.title, p.scope, p.mark, p.sub, p.scopeText]
+    : [KINDS[state.kind].label, 'fb', 'f', LIST_META[state.kind] + '. Tải danh sách từ Facebook rồi lọc và dọn.', 'Chỉ áp dụng cho Facebook'];
+  $('pagehead').innerHTML = `<span class="mark ${scope}">${mark}</span><div><h1>${esc(title)}</h1><p class="meta">${esc(sub)}</p><span class="scope ${scope}">${esc(text)}</span></div>`;
 }
 
 function render() {
   renderTabs();
-  const settingsView = state.kind === 'settings';
+  renderHead();
+  const settingsView = isSettings(state.kind);
   $('list-view').hidden = settingsView;
   $('settings').hidden = !settingsView;
-  $('mode').hidden = $('mode-label').hidden = settingsView || !!KINDS[state.kind].readonly;
+  for (const el of document.querySelectorAll('[data-page]')) el.hidden = el.dataset.page !== state.kind;
+  $('mode').hidden = $('mode-label').hidden = settingsView;
   if (settingsView) return;
   const kind = KINDS[state.kind], list = rows(), sel = state.selected[state.kind];
   const data = state.data[state.kind];
-  const bulk = state.mode === 'bulk' && !kind.readonly;
-  const rowActions = state.mode === 'row' && !kind.readonly;
+  const bulk = state.mode === 'bulk';
+  const rowActions = state.mode === 'row';
   for (const b of $('mode').children) b.setAttribute('aria-pressed', b.dataset.mode === state.mode);
-  $('scan-box').hidden = !kind.readonly;
-  $('llm-notice').hidden = !kind.readonly || state.llm;
-  $('scan-digest').disabled = !state.telegram;
-  $('scan-digest').parentElement.title = state.telegram ? '' : 'Điền bot token và chat ID ở tab Cài đặt để gửi digest';
   $('bulk-box').hidden = !bulk;
-  $('src-on').hidden = $('src-off').hidden = !kind.source;
-  $('updated').textContent = kind.readonly
-    ? (state.sources.length ? `Nguồn quét: ${state.sources.length} · lấy bài trong ${state.days} ngày gần nhất` : 'Chưa chọn nguồn: “Quét ngay” lấy bài trên feed trang chủ') +
-      (state.lastRun ? ` · quét lần cuối ${new Date(state.lastRun).toLocaleString('vi-VN')}` : '')
-    : data?.updated ? 'Cập nhật: ' + new Date(data.updated).toLocaleString('vi-VN') : '';
+  $('updated').textContent = data?.updated ? 'Cập nhật: ' + new Date(data.updated).toLocaleString('vi-VN') : '';
 
   const { key, dir } = state.sort[state.kind];
   const cols = kind.columns;
   const head = [];
   if (bulk) head.push(`<th class="nosort"><input type="checkbox" id="check-all" ${list.length && list.every((r) => sel.has(r.id)) ? 'checked' : ''} aria-label="Chọn tất cả"></th>`);
-  if (kind.source) head.push('<th data-sort="__source" title="Nguồn quét bài">Quét</th>');
   head.push(...cols.map((c) => `<th ${c.nosort ? 'class="nosort"' : `data-sort="${c.key}" class="${c.num ? 'num' : ''}"`}>${c.label}${c.key === key ? (dir > 0 ? ' ▲' : ' ▼') : ''}</th>`));
   if (rowActions) head.push('<th class="nosort actions"></th>');
   $('thead').innerHTML = `<tr>${head.join('')}</tr>`;
 
   const span = head.length;
   if (!data?.items?.length) {
-    $('tbody').innerHTML = `<tr><td colspan="${span}" class="empty">${kind.readonly
-      ? 'Chưa có bài. Bấm “Quét ngay” để lấy bài trên feed trang chủ, hoặc chọn nguồn bằng ☆ ở tab Trang hoặc Nhóm trước.'
-      : data ? 'Không có mục nào.' : 'Chưa có dữ liệu. Bấm “Làm mới” để tải từ Facebook.'}</td></tr>`;
+    $('tbody').innerHTML = `<tr><td colspan="${span}" class="empty">${data?.updated ? 'Không có mục nào.' : 'Chưa có dữ liệu. Bấm “Làm mới” để tải từ Facebook.'}</td></tr>`;
   } else if (!list.length) {
-    const none = kind.readonly && state.filters.posts.latest && !data.items.some((r) => r.latest)
-      ? 'Lần quét gần nhất không có bài mới. Bỏ tick “Chỉ bài mới quét” để xem bài cũ.' : 'Không có mục nào khớp bộ lọc.';
-    $('tbody').innerHTML = `<tr><td colspan="${span}" class="empty">${none}</td></tr>`;
+    $('tbody').innerHTML = `<tr><td colspan="${span}" class="empty">Không có mục nào khớp bộ lọc.</td></tr>`;
   } else {
     $('tbody').innerHTML = list.map((r) => {
       const cells = [];
       if (bulk) cells.push(`<td><input type="checkbox" data-select ${sel.has(r.id) ? 'checked' : ''}></td>`);
-      if (kind.source) { const on = isSource(r); cells.push(`<td><button class="star ${on ? 'on' : ''}" data-star title="${on ? 'Bỏ khỏi nguồn quét' : 'Thêm vào nguồn quét'}">${on ? '★' : '☆'}</button></td>`); }
       cells.push(...cols.map((c) => `<td class="${c.num ? 'num' : ''} ${c.wrap ? 'wrap' : ''}">${c.render ? c.render(r) : esc(r[c.key])}</td>`));
       if (rowActions) cells.push(`<td class="actions">${Object.entries(kind.actions).map(([m, a]) =>
         `<button class="btn small ${a.danger ? 'outline-danger' : ''}" data-act="${m}" ${jobRunning || r[a.flag] ? 'disabled' : ''}>${a.label}</button>`).join(' ')}</td>`);
@@ -221,8 +200,6 @@ function render() {
   $('count').textContent = `Hiển thị ${list.length}/${total}` + (bulk ? ` · Đã chọn ${sel.size}` : '');
   $('acts').innerHTML = Object.entries(kind.actions || {}).map(([m, a]) =>
     `<button class="btn ${a.danger ? 'danger' : ''}" data-act="${m}" ${!sel.size || jobRunning ? 'disabled' : ''}>${a.label}${sel.size ? ` (${sel.size})` : ''}</button>`).join(' ');
-  $('src-on').disabled = $('src-off').disabled = !sel.size;
-  $('scan').disabled = jobRunning;
 }
 
 async function pollJob() {
@@ -237,11 +214,7 @@ async function pollJob() {
     $('job-bar').style.width = (job.total ? (100 * job.done) / job.total : 0) + '%';
     $('job-cancel').hidden = !job.running;
   }
-  if (job.kind && !job.running && pollJob.wasRunning) {
-    // A finished scan shows only what it found, even if the filter was turned off before.
-    if (job.kind === 'posts') { state.filters.posts.latest = true; store.set('filters', JSON.stringify(state.filters)); }
-    await load(job.kind); await loadSources(); renderFilters();
-  }
+  if (job.kind && !job.running && pollJob.wasRunning) { await load(job.kind); renderFilters(); }
   pollJob.wasRunning = job.running;
   render();
   if (job.running) setTimeout(pollJob, 1500);
@@ -249,24 +222,9 @@ async function pollJob() {
 
 async function load(kind) {
   const data = await api(kind);
-  if (kind === 'posts') {
-    state.threshold = data.threshold; state.days = data.days; state.lastRun = data.last_run;
-    state.llm = data.llm; state.telegram = data.telegram;
-    for (const r of data.items) { r.source = r.source || 'Feed trang chủ'; }
-  }
   state.data[kind] = data;
   const ids = new Set(data.items.map((r) => r.id));
   state.selected[kind] = new Set([...state.selected[kind]].filter((id) => ids.has(id)));
-}
-async function loadSources() { state.sources = await api('sources'); }
-async function setSources(ids, on) {
-  state.sources = await api('sources', { kind: state.kind, ids, on });
-  render();
-}
-async function skipPost(row) {
-  showError('');
-  try { await api('posts/skip', { ids: [row.id], skip: !row.skipped }); row.skipped = !row.skipped; render(); }
-  catch (err) { showError(err.message); }
 }
 async function runAction(method, ids, what) {
   const action = KINDS[state.kind].actions[method];
@@ -280,7 +238,7 @@ async function runAction(method, ids, what) {
 
 function goTo(k) {
   state.kind = k;
-  if (k === 'settings') loadSettings().catch((err) => showError(err.message));
+  if (isSettings(k)) loadSettings().catch((err) => showError(err.message));
   else renderFilters();
   render();
 }
@@ -315,9 +273,8 @@ $('thead').addEventListener('click', (e) => {
   }
   let key = e.target.closest('[data-sort]')?.dataset.sort;
   if (!key) return;
-  if (key === '__source') { for (const r of state.data[state.kind]?.items || []) r.__source = isSource(r); }
   const s = state.sort[state.kind];
-  state.sort[state.kind] = { key, dir: s.key === key ? -s.dir : key === '__source' ? -1 : 1 };
+  state.sort[state.kind] = { key, dir: s.key === key ? -s.dir : 1 };
   render();
 });
 $('tbody').addEventListener('click', (e) => {
@@ -325,11 +282,9 @@ $('tbody').addEventListener('click', (e) => {
   const tr = e.target.closest('tr[data-id]');
   if (!tr) return;
   const id = tr.dataset.id, row = state.data[state.kind].items.find((r) => String(r.id) === id);
-  if (e.target.closest('[data-skip]')) return skipPost(row);
-  if (e.target.closest('[data-star]')) return setSources([id], !isSource(row));
   const act = e.target.closest('[data-act]');
   if (act) return runAction(act.dataset.act, [id], `“${row.name}”`);
-  if (state.mode !== 'bulk' || KINDS[state.kind].readonly) return;
+  if (state.mode !== 'bulk') return;
   const sel = state.selected[state.kind];
   sel.has(id) ? sel.delete(id) : sel.add(id);
   render();
@@ -338,28 +293,19 @@ $('acts').addEventListener('click', (e) => {
   const m = e.target.closest('[data-act]')?.dataset.act;
   if (m) runAction(m, [...state.selected[state.kind]], `${state.selected[state.kind].size} mục`);
 });
-$('src-on').addEventListener('click', () => setSources([...state.selected[state.kind]], true));
-$('src-off').addEventListener('click', () => setSources([...state.selected[state.kind]], false));
 $('refresh').addEventListener('click', async () => {
   const btn = $('refresh'), kind = state.kind;
-  btn.disabled = true; btn.textContent = KINDS[kind].readonly ? 'Đang tải…' : 'Đang tải từ Facebook…'; showError('');
+  btn.disabled = true; btn.textContent = 'Đang tải từ Facebook…'; showError('');
   try {
-    if (!KINDS[kind].readonly) await api(`${kind}/refresh`, {});
+    await api(`${kind}/refresh`, {});
     await load(kind); renderFilters();
   } catch (err) { showError('Làm mới lỗi: ' + err.message); }
   finally { btn.disabled = false; btn.textContent = 'Làm mới'; render(); }
 });
-$('scan').addEventListener('click', async () => {
-  showError('');
-  try { await api('scan', { digest: $('scan-digest').checked }); pollJob(); }
-  catch (err) { showError(err.message); }
-});
 $('export').addEventListener('click', () => {
   const kind = KINDS[state.kind], sel = state.selected[state.kind];
   const list = state.mode === 'bulk' && sel.size ? rows().filter((r) => sel.has(r.id)) : rows();
-  const keys = kind.readonly
-    ? ['posted_at', 'source', 'author', 'score', 'summary', 'link', 'text']
-    : [...kind.columns.map((c) => c.key).filter((k) => k !== 'avatar'), 'url'].filter((k, i, a) => a.indexOf(k) === i);
+  const keys = [...kind.columns.map((c) => c.key).filter((k) => k !== 'avatar'), 'url'].filter((k, i, a) => a.indexOf(k) === i);
   const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const csv = [keys.join(','), ...list.map((r) => keys.map((k) => cell(k === 'visited_days' ? r.visited : r[k])).join(','))].join('\r\n');
   const a = document.createElement('a');
@@ -372,10 +318,11 @@ $('job-cancel').addEventListener('click', () => api('job/cancel', {}));
 
 // --- Settings tab --------------------------------------------------------------------------------
 
-const FIELDS = ['llmUrl', 'llmKey', 'llmModel', 'scoreThreshold', 'interests', 'sourceDays',
-                'telegramToken', 'telegramChatId', 'autoRun', 'runTimes', 'remoteOpsUrl'];
+const FIELDS = ['llmUrl', 'llmKey', 'llmModel', 'interests', 'filterModel', 'scoreEnabled', 'hideBelow', 'showBadges', 'holdUntilScored',
+                'fbEnabled', 'fbHideAds', 'fbHideVideos', 'fbHideFriendSuggestions', 'fbHideSuggested', 'fbHideNotFollowed', 'fbHideGroupSuggestions',
+                'xEnabled', 'xHideAds', 'xHideVideos', 'xHideGrok', 'remoteOpsUrl'];
 // Hosts the manifest already grants; any other LLM or config host is asked for when saving.
-const GRANTED = /(^|\.)facebook\.com$|^api\.telegram\.org$|^gist\.githubusercontent\.com$/;
+const GRANTED = /(^|\.)facebook\.com$|^gist\.githubusercontent\.com$/;
 const FROM = { learned: 'Tự học', remote: 'Từ xa', bundled: 'Kèm extension' };
 const when = (t) => (t ? new Date(t).toLocaleString('vi-VN') : '');
 
@@ -386,9 +333,9 @@ function readForm() {
   }));
 }
 
-function hostPatterns(s) {
+function originsOf(urls) {
   const patterns = [];
-  for (const url of [s.llmUrl, s.remoteOpsUrl]) {
+  for (const url of urls) {
     try {
       const u = new URL(url);
       if (!GRANTED.test(u.hostname)) patterns.push(`${u.protocol}//${u.hostname}/*`);
@@ -397,12 +344,15 @@ function hostPatterns(s) {
   return [...new Set(patterns)];
 }
 
+const hostPatterns = (s) => originsOf([s.llmUrl, s.remoteOpsUrl]);
+
 // Must run before any other await in a click handler: Chrome asks only during a user gesture.
-async function grantHosts(s) {
-  const origins = hostPatterns(s);
+async function grantOrigins(origins) {
   if (!origins.length || await chrome.permissions.request({ origins })) return;
   throw new Error(`Cần cho phép truy cập ${origins.join(', ')} thì extension mới gọi được địa chỉ này.`);
 }
+
+const grantHosts = (s) => grantOrigins(hostPatterns(s));
 
 async function loadSettings() {
   const s = await api('settings');
@@ -410,11 +360,22 @@ async function loadSettings() {
     const el = $('s-' + f);
     if (el.type === 'checkbox') el.checked = !!s[f]; else el.value = s[f] ?? '';
   }
+  syncMasters();
   loadModels({ ask: false });
-  const last = await api('settings/auto-run');
-  $('auto-run-status').textContent = last
-    ? `Lần chạy tự động gần nhất: ${when(last.at)} · ${last.status === 'ok' ? 'xong' : 'lỗi'}${last.note ? ' · ' + last.note : ''}` : '';
+  renderSafety(await api('fb/safety'));
   renderOps(await api('ops'));
+}
+
+// A site's rules look inactive while its master switch is off.
+function syncMasters() {
+  for (const p of ['fb', 'x']) $(`rules-${p}`).classList.toggle('dim', !$(`s-${p}Enabled`).checked);
+}
+
+function renderSafety(st) {
+  $('safety-status').innerHTML = (st.cooldown
+    ? `<span class="err">Đang tạm nghỉ đến ${esc(when(st.cooldown.until))}: ${esc(st.cooldown.reason)}</span><br>`
+    : '<span class="ok">Bình thường.</span><br>') + `Hôm nay đã dọn ${st.actions}/${st.limit} mục (hủy kết bạn, rời nhóm, bỏ theo dõi).`;
+  $('cooldown-clear').hidden = !st.cooldown;
 }
 
 function renderOps(st) {
@@ -479,19 +440,44 @@ async function loadModels({ ask }) {
 $('llm-models').addEventListener('click', () => loadModels({ ask: true }));
 $('s-llmUrl').addEventListener('change', () => loadModels({ ask: false }));
 
-$('save').addEventListener('click', async () => {
-  const s = readForm();
-  $('save-result').textContent = '';
+const flash = (page) => {
+  const el = $(`saved-${page}`);
+  el.classList.add('show');
+  clearTimeout(flash[page]);
+  flash[page] = setTimeout(() => el.classList.remove('show'), 2200);
+};
+
+// Switches and numbers save the moment they change; text boxes wait for their Save button.
+$('settings').addEventListener('change', async (e) => {
+  const el = e.target;
+  if (!el.id?.startsWith('s-') || 'text' in el.dataset) return;
+  const key = el.id.slice(2);
   try {
-    await grantHosts(s);
-    await api('settings', s);
-    $('save-result').innerHTML = '<span class="ok">Đã lưu.</span>';
-    await loadSettings();
-    await load('posts');
+    await api('settings', { [key]: el.type === 'checkbox' ? el.checked : el.value.trim() });
+    showError('');
   } catch (err) {
-    $('save-result').innerHTML = `<span class="err">${esc(err.message)}</span>`;
+    showError(`Không lưu được: ${err.message}`);
   }
+  syncMasters();
 });
+
+for (const btn of document.querySelectorAll('[data-save]')) {
+  btn.addEventListener('click', async () => {
+    const page = btn.dataset.save;
+    const patch = Object.fromEntries([...document.querySelectorAll(`[data-page="${page}"] [data-text]`)]
+      .map((el) => [el.id.slice(2), el.value.trim()]));
+    const errorEl = $(`save-error-${page}`);
+    errorEl.textContent = '';
+    try {
+      await grantHosts({ llmUrl: $('s-llmUrl').value, remoteOpsUrl: $('s-remoteOpsUrl').value });
+      await api('settings', patch);
+      flash(page);
+      if (page === 'common') loadModels({ ask: false });
+    } catch (err) {
+      errorEl.textContent = err.message;
+    }
+  });
+}
 
 $('llm-test').addEventListener('click', async () => {
   const s = readForm();
@@ -503,6 +489,15 @@ $('llm-test').addEventListener('click', async () => {
     out.innerHTML = `<span class="ok">Kết nối được. Model trả lời: ${esc(reply)}</span>`;
   } catch (err) {
     out.innerHTML = `<span class="err">${esc(err.message)}</span>`;
+  }
+});
+
+$('cooldown-clear').addEventListener('click', async () => {
+  if (!confirm('Chỉ bỏ thời gian nghỉ khi bạn đã mở Facebook và xử lý xong yêu cầu xác minh hoặc cảnh báo. Tiếp tục?')) return;
+  try {
+    renderSafety(await api('fb/safety/clear', {}));
+  } catch (err) {
+    showError(err.message);
   }
 });
 
@@ -520,9 +515,9 @@ $('ops-refresh').addEventListener('click', async () => {
 });
 
 (async () => {
-  const results = await Promise.allSettled([loadSources(), ...Object.keys(KINDS).map(load)]);
+  const results = await Promise.allSettled(Object.keys(KINDS).map(load));
   const failed = results.filter((r) => r.status === 'rejected').map((r) => r.reason.message);
   if (failed.length) showError(failed.join(' · '));
-  renderFilters();
+  goTo(state.kind);
   await pollJob();
 })();

@@ -1,48 +1,88 @@
-# auto-social-networks
+# FeedSift
 
-`fb-digest` lướt trang chủ Facebook, hoặc các trang và nhóm bạn chọn, thay bạn, rồi gửi lên Telegram những bài đáng đọc.
+*A browser extension that sifts your Facebook and X feeds: it hides ads, videos, suggestions and Grok bait as you scroll, and can optionally score every remaining post against your interests with an LLM.*
 
-Bot mở Chrome thật với một profile riêng đã đăng nhập, cuộn feed như người thật và lấy nguyên văn bản của từng bài. Việc nhận ra tác giả, quảng cáo hay chủ đề được giao hết cho một LLM qua API tương thích OpenAI (mặc định là router cục bộ tại `localhost:20128`). Nhờ vậy, khi Facebook đổi giao diện, code gần như không phải sửa.
+FeedSift là extension Chrome (Manifest V3) lọc feed ngay khi bạn lướt Facebook và X. Quảng cáo, video, gợi ý và bài hỏi Grok bị ẩn theo quy tắc. Nếu muốn, một LLM do bạn tự cấu hình sẽ chấm điểm các bài còn lại theo sở thích để ẩn bài không đáng đọc.
 
+- **Ẩn hẳn, không để lại dấu vết.** Bài bị ẩn biến mất khỏi feed, không có dòng "đã ẩn".
+- **Không gửi request nào tới Facebook hay X.** Bộ lọc chỉ đọc và ẩn nội dung của trang bạn đang mở, nên không để lại dấu hiệu tự động ở phía họ.
+- **Dữ liệu ở lại trình duyệt.** Cài đặt và điểm đã chấm nằm trong `chrome.storage.local` và IndexedDB. Chỉ khi bạn bật chấm điểm, nội dung chữ của các bài còn lại mới được gửi tới LLM bạn chọn (có thể chạy ngay trên máy).
+- **Mỗi nền tảng một bộ cài đặt riêng,** có nhãn màu cho biết cài đặt nào áp dụng cho Facebook, cho X hay cho cả hai.
+
+## Quy tắc ẩn
+
+| Quy tắc | Facebook | X |
+|---|---|---|
+| Quảng cáo | ✓ nhãn "Được tài trợ" | ✓ nhãn "Ad", "Quảng cáo" |
+| Video và reel | ✓ | ✓ (mặc định tắt) |
+| Gợi ý kết bạn ("Những người bạn có thể biết") | ✓ | |
+| Bài gợi ý ("Gợi ý cho bạn") | ✓ | |
+| Trang chưa theo dõi (nút "Theo dõi" ở đầu bài) | ✓ | |
+| Gợi ý nhóm (khối "Nhóm gợi ý cho bạn" và bài từ nhóm chưa tham gia) | ✓ | |
+| Bài hỏi Grok (tweet gọi `@grok` và câu trả lời của chính Grok) | | ✓ |
+| Chấm điểm bằng LLM (tùy chọn) | ✓ dùng chung | ✓ dùng chung |
+
+Các quy tắc chạy ngay khi bài xuất hiện, không cần LLM và không tốn token. Mỗi quy tắc bật tắt riêng và có hiệu lực ngay, không cần tải lại trang.
+
+## Cài đặt
+
+```bash
+git clone https://github.com/namtao/feedsift.git
 ```
-Chrome (zendriver, profile riêng, cửa sổ thu nhỏ)
-  │  cuộn trang chủ, bấm "Xem thêm", lấy innerText + link từng bài    fb_digest/collector.js
-  ▼
-Postgres  fb_posts / fb_runs      lọc trùng giữa các lượt chạy         fb_digest/store.py
-  ▼
-LLM /v1/chat/completions + schema is_ad, author, summary, score 0-10   fb_digest/scorer.py
-  ▼
-Telegram                          digest bài score ≥ ngưỡng, cảnh báo   fb_digest/telegram.py
-```
 
-Quảng cáo trả tiền bị bỏ ngay lúc thu bài; bài bán hàng còn lại được LLM gắn cờ `is_ad` và loại khỏi digest. Bài gợi ý từ các trang bạn chưa theo dõi vẫn được giữ và chấm điểm theo nội dung.
+1. Mở `chrome://extensions` (hoặc `brave://extensions`) và bật **Developer mode**.
+2. Bấm **Load unpacked** rồi chọn thư mục [extension/](extension/).
+3. Bấm biểu tượng FeedSift để mở trang quản lý, bật các quy tắc muốn dùng, rồi mở facebook.com hoặc x.com.
 
-## Extension Chrome
+Sau mỗi lần sửa code, bấm nút tải lại ở FeedSift rồi tải lại tab Facebook hoặc X.
 
-Thư mục [extension/](extension/) là bản extension (Manifest V3) của cùng công cụ, dùng để chia sẻ cho người khác. Extension không cần Python, Postgres hay đăng nhập riêng: nó dùng luôn phiên Facebook mà người dùng đang đăng nhập trên trình duyệt, và lưu mọi dữ liệu trong trình duyệt đó (IndexedDB và `chrome.storage.local`).
+## Cách dùng
 
-**Cài:** mở `chrome://extensions`, bật Developer mode, bấm "Load unpacked" rồi chọn thư mục `extension/`. Bấm biểu tượng FB Digest để mở trang quản lý. Trang này có các tab Bài viết, Bạn bè, Trang, Nhóm giống `fb-digest manage`, và thêm tab Cài đặt.
+Trang quản lý có thanh bên chia hai nhóm:
 
-**Cài đặt trong extension:**
+- **Bộ lọc khi lướt:** *Chung* (xám, áp dụng cho cả hai: chấm điểm bằng LLM, kết nối LLM, sở thích), *Facebook* (xanh) và *X* (đen). Mỗi nền tảng có công tắc bật lọc riêng và danh sách quy tắc riêng.
+- **Quản lý Facebook** (xanh): Bạn bè, Trang, Nhóm, và Kết nối và an toàn.
 
-- **LLM:** Base URL và model của bất kỳ API nào tương thích OpenAI (OmniRoute tại `http://localhost:20128`, OpenAI, OpenRouter, Ollama…); API key để trống được nếu router không yêu cầu. Nhập URL rồi bấm "Tải model": extension đọc `<URL>/v1/models` (hoặc `<URL>/models`), tự thêm `/v1` vào URL nếu cần, rồi gợi ý tên model khi gõ. Chỉ khi có URL và model thì bài mới được chấm điểm; nếu chưa, extension vẫn quét và hiện bài. Lần đầu dùng một địa chỉ mới, Chrome sẽ hỏi quyền truy cập địa chỉ đó.
-- **Sở thích:** thay cho `interests.txt`.
-- **Telegram:** bot token và chat ID, không bắt buộc.
-- **Tự động chạy:** giờ chạy, lệch ngẫu nhiên tối đa 30 phút. Extension chỉ chạy khi trình duyệt đang mở; lượt bị lỡ được chạy bù khi mở lại trình duyệt.
+Mỗi trang có tiêu đề kèm dòng "Chỉ áp dụng khi lướt facebook.com" hay "Áp dụng cho cả Facebook và X". Công tắc và ô số tự lưu ngay; chỉ các ô nhập chữ (URL, key, model, sở thích) cần bấm nút Lưu.
 
-**Khác với bản Python:**
+**Nút nhỏ ở góc dưới bên trái mỗi trang** cho biết "ẩn N/M bài". Rê chuột để xem đã ẩn những loại nào, bấm để tắt hoặc bật lọc của riêng nền tảng đó, bấm chuột phải để chép báo cáo chẩn đoán (cờ nhận ra, nút ở đầu bài và 100 ký tự đầu của 15 bài đầu; xem lại và xóa tên người trước khi gửi cho ai).
 
-- Khi chưa chọn nguồn, "Quét ngay" lấy khoảng 60 bài trên feed trang chủ qua query `CometNewsFeedPaginationQuery`, chạy ngầm và có giờ đăng chính xác, thay cho việc cuộn feed của `fb-digest run`.
-- Làm mới Bạn bè, Trang, Nhóm, các thao tác dọn danh sách và quét nguồn đều chạy ngầm trong service worker, không mở tab hay cửa sổ nào. Service worker gửi request bằng cookie Facebook của trình duyệt; một rule `declarativeNetRequest` chỉ áp cho request của chính extension đặt `Origin`/`Referer` thành `https://www.facebook.com`, vì API của Facebook từ chối origin `chrome-extension://`.
-- Tab Nhóm đọc trạng thái thật từ Facebook ngay lần làm mới đầu: "lần vào cuối" (`GroupsCometAllJoinedGroupsSectionPaginationQuery`), đã bỏ theo dõi (`GroupsCometJoinedActionMenuQuery`) và đã tắt thông báo (`GroupsCometNotificationSettingsEditDialogQuery`, tắt cả thông báo trong ứng dụng lẫn thông báo đẩy).
-- Chỉ khi mọi mẫu query lấy bài đã biết đều hỏng, extension mới mở một cửa sổ Facebook nhỏ để cuộn feed trang chủ hoặc trang nguồn. Việc cuộn làm Facebook gửi query hiện tại; extension học mẫu đó rồi đọc bài lại qua API.
+**Cầu chì:** nếu một quy tắc khớp hơn 60% số bài trên trang (khi đã có ít nhất 6 bài), extension coi là nhận diện sai, bỏ qua quy tắc đó và nút ở góc hiện ⚠. Đổi lại, một feed thật sự toàn quảng cáo hay toàn video sẽ không bị ẩn theo quy tắc ấy.
+
+## Chấm điểm bằng LLM (tùy chọn)
+
+Tắt ô "Chấm điểm và ẩn bài điểm thấp" thì không có lượt gọi LLM nào và không cần cấu hình gì thêm. Khi bật:
+
+- Điền Base URL và model của bất kỳ API nào tương thích OpenAI (OmniRoute tại `http://localhost:20128`, OpenAI, OpenRouter, Ollama…); API key để trống được nếu router không yêu cầu. Nhập URL rồi bấm "Tải model": extension đọc `<URL>/v1/models` (hoặc `<URL>/models`) và gợi ý tên model khi gõ. Lần đầu dùng một địa chỉ mới, trình duyệt sẽ hỏi quyền truy cập địa chỉ đó.
+- Điền ô Sở thích, cả điều bạn muốn đọc lẫn không muốn đọc. Càng cụ thể thì điểm càng sát: "AI: model mới, tool mã nguồn mở, kỹ thuật RAG/agent" tốt hơn chỉ ghi "AI".
+- Mỗi bài còn lại sau các quy tắc được chấm 0–10; điểm hiện ở góc bài, bài dưới ngưỡng (mặc định 4) bị ẩn. Mặc định bài hiện ngay và chỉ ẩn khi có điểm; bật "Ẩn bài cho tới khi chấm xong" nếu muốn ngược lại.
+- **Điểm được lưu đệm** theo nội dung bài và Sở thích, nên cuộn lại hay tải lại trang không gọi LLM lần nữa; sửa Sở thích thì chấm lại từ đầu.
+- Nếu LLM lỗi hoặc quá 25 giây chưa có điểm, bài vẫn hiện bình thường và nút ở góc hiện ⚠.
+- Nên chọn một model nhanh ở ô "Model dùng khi lọc", vì mỗi lần cuộn có vài bài cần chấm. Nên ghim một model cụ thể: combo tự rơi xuống model yếu hơn khi lỗi sẽ làm điểm dao động. Thang điểm nằm ở `SYSTEM_PROMPT` trong [extension/lib/scorer.js](extension/lib/scorer.js).
+
+## Bạn bè, Trang, Nhóm (Facebook)
+
+Bấm "Làm mới" để tải danh sách từ Facebook (vài giây với trang, khoảng một phút với bạn bè; với nhóm, extension còn đọc trạng thái theo dõi và thông báo của từng nhóm nên mất khoảng 5 giây mỗi nhóm), rồi lọc, xuất CSV và dọn danh sách:
+
+| Mục | Nội dung | Lọc | Thao tác |
+|---|---|---|---|
+| Bạn bè | Ảnh, tên, trạng thái, bạn chung, giới tính | Chỉ tài khoản đã khóa, bạn chung ≤ N, giới tính | Hủy kết bạn |
+| Trang | Ảnh, tên, loại trang, đã thích, xác minh | Loại trang | Bỏ theo dõi |
+| Nhóm | Ảnh, tên, lần bạn vào cuối, bài mới nhất, quản trị, đã bỏ theo dõi, đã tắt thông báo | Không vào ≥ N ngày, không có bài mới ≥ N ngày | Rời nhóm, bỏ theo dõi, tắt thông báo |
+
+Nút gạt "Thao tác" ở góc phải chọn giữa nút ngay trên từng dòng và chế độ chọn nhiều dòng rồi làm một lần.
+
+- **Tài khoản đã khóa:** là bạn bè vẫn có trong danh sách trên trang cá nhân nhưng Facebook không trả về trong danh sách bạn bè đang hoạt động.
+- **Thao tác dọn danh sách** chạy lần lượt, mỗi thao tác cách nhau 30–90 giây, tối đa 10 thao tác mỗi ngày cộng chung mọi mục, và tự dừng ở lỗi đầu tiên vì lỗi thường là do Facebook đang hạn chế tài khoản. Hủy kết bạn, bỏ theo dõi trang và rời nhóm không hoàn tác được. Bỏ theo dõi nhóm và tắt thông báo nhóm giữ nhóm trong danh sách và đánh dấu ✓; Facebook không cho biết trạng thái này khi tải danh sách nên cột chỉ ghi những gì đã làm từ trang quản lý.
+- **Thời gian nghỉ:** khi Facebook trả HTTP 429, báo giới hạn tốc độ hay chặn tạm thời, hoặc chuyển sang trang xác minh (`/checkpoint`), extension dừng mọi thao tác với Facebook 24 giờ. Xử lý xong trên Facebook thì bấm "Bỏ thời gian nghỉ" ở mục "Kết nối và an toàn". Các mẫu nhận biết lỗi là suy đoán từ thông báo thường gặp, chưa kiểm chứng với mọi kiểu chặn của Facebook. Bộ lọc khi lướt không gửi request nên không bị ảnh hưởng.
+- Các mục này gửi request tới Facebook bằng cookie của trình duyệt. Một rule `declarativeNetRequest` chỉ áp cho request của chính extension, đặt `Origin`/`Referer` thành `https://www.facebook.com`, vì API của Facebook từ chối origin `chrome-extension://`.
 
 ### doc_id của Facebook
 
 Mỗi thao tác có tối đa ba nguồn `doc_id`, và mã mới nhất được thử trước. Nếu Facebook từ chối, extension thử mã tiếp theo:
 
-1. **Tự học:** extension đọc các request GraphQL mà chính web Facebook gửi khi người dùng lướt bình thường (`chrome.webRequest`), và lưu `doc_id` theo `fb_api_req_friendly_name`. Với query lấy bài của nhóm và trang, extension lưu cả `variables` để dùng làm mẫu. Request do extension tự gửi thì không được học. Khi mọi mẫu lấy bài đều hỏng, extension mở trang nguồn trong cửa sổ nhỏ và cuộn để Facebook gửi query mới, rồi học từ đó.
-2. **Cấu hình từ xa:** file [extension/ops.json](extension/ops.json) được tải từ `remoteOpsUrl` khi khởi động và mỗi 6 giờ. Khi Facebook đổi mã một thao tác mà người dùng ít khi tự làm (rời nhóm, hủy kết bạn…), chỉ cần sửa file này là mọi người dùng nhận mã mới, không cần phát hành bản mới. Mặc định URL trỏ tới [Gist public này](https://gist.github.com/namtao/e88f19c9790479f84d21da4392c896bd), nên repo vẫn để private được. Sau khi sửa `extension/ops.json` (nhớ đổi cả `updated`, vì mã mới nhất được thử trước), đẩy file lên Gist bằng:
+1. **Tự học:** extension đọc các request GraphQL mà chính web Facebook gửi khi bạn lướt bình thường (`chrome.webRequest`), và lưu `doc_id` theo `fb_api_req_friendly_name`. Request do extension tự gửi thì không được học.
+2. **Cấu hình từ xa:** file [extension/ops.json](extension/ops.json) được tải từ `remoteOpsUrl` khi khởi động và mỗi 6 giờ. Khi Facebook đổi mã một thao tác bạn ít khi tự làm (rời nhóm, hủy kết bạn…), chỉ cần sửa file này là mọi người dùng nhận mã mới, không cần phát hành bản mới. Mặc định URL trỏ tới [Gist public này](https://gist.github.com/namtao/e88f19c9790479f84d21da4392c896bd). Sau khi sửa `extension/ops.json` (nhớ đổi cả `updated`, vì mã mới nhất được thử trước), đẩy lên Gist bằng:
 
    ```bash
    gh gist edit e88f19c9790479f84d21da4392c896bd --filename ops.json extension/ops.json
@@ -51,151 +91,39 @@ Mỗi thao tác có tối đa ba nguồn `doc_id`, và mã mới nhất được
    GitHub có thể cache link raw vài phút trước khi trả về bản mới.
 3. **Kèm extension:** cũng là `extension/ops.json`, đóng gói lúc cài.
 
-Tab Cài đặt hiển thị mã đang dùng của từng thao tác và nguồn của mã đó.
+Trang quản lý hiển thị mã đang dùng của từng thao tác và nguồn của mã đó. Nếu một thao tác báo lỗi doc_id, hãy làm thao tác đó một lần bằng tay trên Facebook để extension tự học, hoặc bấm "Cập nhật cấu hình".
 
-## Yêu cầu
+## Quyền của extension
 
-- Linux có Google Chrome (hoặc Brave/Edge)
-- Conda env `.env-auto-social-networks` (Python ≥ 3.11)
-- Một database Postgres
-- Một endpoint LLM tương thích OpenAI (`/v1/chat/completions` có hỗ trợ `response_format` JSON schema), mặc định là router tại `http://localhost:20128/v1` với model `antigravity/claude-sonnet-5`. Ollama cũng dùng được qua `http://<host>:11434/v1`.
-- Một bot Telegram, không bắt buộc. Nếu chưa có, digest được in ra terminal.
+| Quyền | Dùng để |
+|---|---|
+| Script trên `facebook.com`, `x.com`, `twitter.com` | Đọc và ẩn bài ngay trên trang |
+| `storage` | Lưu cài đặt và danh sách bạn bè, trang, nhóm |
+| `webRequest` | Học `doc_id` từ request của chính Facebook |
+| `declarativeNetRequestWithHostAccess` | Đặt `Origin`/`Referer` cho request của extension tới Facebook |
+| `alarms` | Làm mới cấu hình `doc_id` từ xa mỗi 6 giờ |
+| Truy cập `*.facebook.com`, `gist.githubusercontent.com` | Các mục quản lý Facebook và tải cấu hình từ xa |
+| Địa chỉ LLM của bạn (xin quyền khi bạn nhập URL) | Gọi API chấm điểm |
 
-## Cài đặt
+## Giới hạn
 
-```bash
-conda activate .env-auto-social-networks
-pip install -e .
+Các cách nhận diện dựa trên giao diện công khai của hai trang và có thể hỏng khi họ đổi giao diện. Quy tắc của Facebook đã dùng thử trên feed thật; quy tắc của X (quảng cáo, `@grok`, ô tweet trong danh sách ảo) mới kiểm thử trên trang dựng giả, chưa kiểm chứng với tài khoản X thật. Selector nằm ở đầu [extension/content/filter.js](extension/content/filter.js), phần `FACEBOOK` và `X`. Khi quy tắc không ẩn đúng, báo cáo chẩn đoán ở nút góc trang cho biết extension nhìn thấy gì.
+
+## Cấu trúc
+
+```
+extension/
+  manifest.json       quyền, content script, service worker
+  content/filter.js   bộ lọc chạy trong trang Facebook và X (quy tắc, ẩn bài, nút ở góc)
+  content/filter.css  ẩn bài và hiện điểm
+  background.js       chấm điểm, danh sách Facebook, cài đặt
+  manager.html/.js    trang quản lý
+  lib/                settings, scorer (LLM), db (lưu đệm điểm), account + fb + ops (Facebook)
+  ops.json            doc_id đi kèm
 ```
 
-1. Tạo `.env` ở thư mục gốc. Tối thiểu cần `DATABASE_URL`, `TELEGRAM_BOT_TOKEN` và `TELEGRAM_CHAT_ID`; các biến khác xem mục [Cấu hình](#cấu-hình-env).
-2. Viết `interests.txt` gồm những chủ đề bạn muốn đọc và không muốn đọc. Xem mục [Chỉnh chất lượng digest](#chỉnh-chất-lượng-digest).
-3. Chạy `fb-digest login` để đăng nhập Facebook một lần.
+Cài đặt của các bản cũ được chuyển sang tên mới khi mở lần đầu. Điểm đã chấm nằm trong IndexedDB `fb-digest` (tên giữ nguyên từ các bản cũ để không mất điểm đã lưu).
 
-### Đăng nhập Facebook
+## Giấy phép
 
-`fb-digest login` mở một cửa sổ Chrome dùng profile riêng tại `data/browser-profile/`. Bạn đăng nhập trong cửa sổ đó, kể cả bước xác minh 2 bước, và nên chọn **"Tin cậy thiết bị này"**. Đừng đóng cửa sổ bằng tay: khi thấy cookie đăng nhập, bot tự đóng nó và lưu phiên. Bot chờ tối đa 15 phút.
-
-Bot không dùng lại được phiên Facebook trong Chrome hay Brave thường ngày của bạn. Từ bản 136, Chromium chặn điều khiển tự động (`--remote-debugging-port`) trên profile mặc định, nên bot bắt buộc phải có profile riêng.
-
-`data/browser-profile/` chứa cookie đăng nhập Facebook. Đừng chia sẻ hay commit thư mục này; nó đã có trong `.gitignore`.
-
-### Lấy Telegram chat ID
-
-Nhắn một tin bất kỳ cho bot, hoặc thêm bot vào nhóm rồi nhắn trong nhóm. Sau đó mở `https://api.telegram.org/bot<TOKEN>/getUpdates` và tìm giá trị `"chat":{"id": ...}`. Chat ID của nhóm là số âm.
-
-## Sử dụng
-
-```bash
-fb-digest            # = fb-digest run: thu bài → chấm điểm → gửi digest
-fb-digest collect    # chỉ thu bài
-fb-digest score      # chấm các bài chưa có điểm
-fb-digest digest     # gửi các bài đủ điểm mà chưa gửi
-fb-digest login      # đăng nhập lại khi nhận cảnh báo hết session/checkpoint
-fb-digest manage     # mở trang quản lý: quét bài theo trang/nhóm, dọn bạn bè/trang/nhóm
-```
-
-Nếu không activate conda env, gọi thẳng `~/.conda/envs/.env-auto-social-networks/bin/fb-digest`.
-
-Mỗi bài chỉ được gửi một lần. Một lượt với 30 bài mất khoảng 6 phút: khoảng 3,5 phút thu bài và khoảng 2,5 phút chấm điểm (khoảng 5 giây mỗi bài với `antigravity/claude-sonnet-5`).
-
-## Trang quản lý
-
-`fb-digest manage` mở trang web tại `http://127.0.0.1:8765/`, chỉ truy cập được từ máy này. Trang có 4 tab:
-
-| Tab | Nội dung | Lọc | Thao tác |
-|---|---|---|---|
-| Bài viết | Bài từ các nguồn đã chọn, mới nhất trước: thời gian, nguồn, điểm, tóm tắt, link | Chỉ bài mới quét, chỉ bài từ nguồn, điểm ≥ N, nguồn, ẩn quảng cáo | Quét ngay, có thể kèm gửi digest Telegram |
-| Bạn bè | Ảnh, tên, trạng thái, bạn chung, giới tính | Chỉ tài khoản đã khóa, bạn chung ≤ N, giới tính | Hủy kết bạn |
-| Trang | Ảnh, tên, loại trang, đã thích, xác minh | Chỉ nguồn quét, loại trang | Bỏ theo dõi, chọn làm nguồn quét |
-| Nhóm | Ảnh, tên, lần bạn vào cuối, bài mới nhất, quản trị, đã bỏ theo dõi, đã tắt thông báo | Chỉ nguồn quét, không vào ≥ N ngày, không có bài mới ≥ N ngày | Rời nhóm, bỏ theo dõi, tắt thông báo, chọn làm nguồn quét |
-
-Bấm "Làm mới" để tải danh sách từ Facebook (vài giây với trang, khoảng một phút với bạn bè; với nhóm, extension còn đọc trạng thái theo dõi và thông báo của từng nhóm nên mất khoảng 5 giây mỗi nhóm). Kết quả được lưu ở `data/manage/`. Nút gạt "Thao tác" ở góc phải chọn giữa nút ngay trên từng dòng và chế độ chọn nhiều dòng rồi làm một lần. "Xuất CSV" xuất các dòng đang chọn, hoặc toàn bộ dòng đang hiển thị nếu chưa chọn dòng nào.
-
-### Quét bài theo trang, nhóm
-
-1. Ở tab Trang hoặc Nhóm, bấm ☆ để chọn nguồn. Danh sách nguồn được lưu ở `data/manage/sources.json`.
-2. Ở tab Bài viết (trang mở ra mặc định), bấm "Quét ngay". Bot lấy lần lượt từng nguồn, nghỉ 10–25 giây giữa hai nguồn và 2–5 giây giữa hai trang bài, các bài đăng trong 2 ngày gần nhất (đổi bằng `SOURCE_DAYS`), lưu vào bảng `fb_posts` trong Postgres, chấm điểm bằng LLM, và gửi digest Telegram nếu bạn tick "Gửi digest Telegram".
-
-Tab Bài viết mặc định chỉ hiển thị những bài mà lượt quét gần nhất mới thu được, mới nhất trước; lượt đó có thể là nút "Quét ngay" hoặc `fb-digest run`. Quét xong, bộ lọc "Chỉ bài mới quét" tự bật lại. Bỏ tick để xem toàn bộ bài đã lưu. Bộ lọc bạn điền (ví dụ "Điểm ≥") được nhớ cho lần mở sau. Nút "Bỏ qua" trên mỗi dòng ẩn bài đó (lưu ở cột `skipped_at`) và loại nó khỏi digest Telegram; bỏ tick "Ẩn bài đã bỏ qua" để xem lại và bấm "Hiện lại". Bài trùng không được lưu lại: trùng nội dung, hoặc trùng link khi tác giả sửa bài.
-
-Khi đã có nguồn, `fb-digest run` (kể cả khi timer chạy) cũng quét các nguồn này thay cho feed. Bỏ hết ☆ thì bot quay lại lướt feed như trước.
-
-Bot quét 4 nguồn cùng lúc bằng cách gọi thẳng API lấy bài của nhóm/trang, không mở từng trang, nên mỗi nguồn chỉ mất vài giây. Lần đầu, một nguồn của mỗi loại (nhóm, trang) được mở và cuộn như người thật để học mẫu request, lưu ở `data/manage/feed_queries.json`. Nếu Facebook đổi API, nguồn đó tự quay về cách mở trang và bot học lại mẫu mới.
-
-Thời gian đăng lấy từ dữ liệu JSON mà Facebook gửi về trang (`creation_time`), nên bài được sắp xếp đúng theo giờ đăng. Bài lấy từ feed không có giờ đăng chính xác; bỏ tick "Chỉ bài từ nguồn đã chọn" để xem cả những bài đó, xếp theo giờ thu bài.
-
-### Lưu ý
-
-- **Tài khoản đã khóa:** là bạn bè vẫn có trong danh sách trên trang cá nhân nhưng Facebook không trả về trong danh sách bạn bè đang hoạt động.
-- **Thao tác:** chạy lần lượt, mỗi thao tác cách nhau 30–90 giây, tối đa 10 thao tác mỗi ngày (cộng chung mọi tab), và tự dừng ở lỗi đầu tiên vì lỗi thường là do Facebook đang hạn chế tài khoản. Hủy kết bạn, bỏ theo dõi trang và rời nhóm không hoàn tác được. Bỏ theo dõi nhóm (vẫn là thành viên nhưng không thấy bài trên bảng feed) và tắt thông báo nhóm (tắt cả thông báo trong Facebook lẫn thông báo đẩy) giữ nhóm trong danh sách và đánh dấu ✓ ở cột tương ứng; Facebook không cho biết trạng thái này khi tải danh sách, nên cột chỉ ghi những gì đã làm từ trang quản lý. Muốn bật lại thì làm trên Facebook. Rời nhóm hoặc bỏ theo dõi một nguồn quét cũng bỏ nó khỏi danh sách nguồn.
-- **Bỏ theo dõi trang:** trang không còn hiện trên feed, nhưng lượt thích trang (nếu có) vẫn giữ nguyên.
-- **Chạy cùng lệnh khác:** trang quản lý dùng chung profile Chrome với bot. Khi đang mở trang quản lý, hãy quét bằng nút "Quét ngay" thay vì `fb-digest run`, và tắt trang quản lý (Ctrl+C) trước giờ timer chạy.
-
-## Chạy tự động
-
-```bash
-mkdir -p ~/.config/systemd/user
-cp deploy/fb-digest.service deploy/fb-digest.timer ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now fb-digest.timer
-systemctl --user list-timers fb-digest.timer   # lần chạy kế tiếp
-journalctl --user -u fb-digest -f              # log
-```
-
-Timer chạy lúc 8h, 13h và 20h, mỗi lần lệch ngẫu nhiên tối đa 30 phút. Nếu đến giờ mà máy đang tắt, lượt đó được chạy bù khi máy bật lại.
-
-Chế độ có giao diện, kể cả khi thu nhỏ, cần `DISPLAY`/`WAYLAND_DISPLAY` của phiên desktop. Hầu hết desktop tự export các biến này cho systemd user. Trên máy không có desktop, đặt `HEADLESS=true` hoặc dùng dòng `xvfb-run` ghi trong file service.
-
-## Cấu hình (`.env`)
-
-| Biến | Mặc định | Ý nghĩa |
-|---|---|---|
-| `DATABASE_URL` | bắt buộc | Chuỗi kết nối Postgres; bảng được tạo tự động ở lần chạy đầu |
-| `LLM_URL` / `LLM_MODEL` | `http://localhost:20128/v1` / `antigravity/claude-sonnet-5` | Base URL tương thích OpenAI và model dùng để chấm điểm |
-| `LLM_TIMEOUT` | `600` | Timeout mỗi request (giây) |
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | trống | Để trống thì digest được in ra stdout |
-| `BROWSER` / `BROWSER_PATH` | `auto` / trống | `chrome`, `brave`, `msedge`; có thể trỏ thẳng tới file chạy |
-| `HEADLESS` | `false` | `true` để chạy không giao diện (đã chạy được với Facebook) |
-| `MINIMIZED` | `false` | `true` để thu nhỏ cửa sổ ngay khi mở (khi `HEADLESS=false`) |
-| `FEED_URL` | `https://www.facebook.com/` | Trang chủ; `/?filter=all&sk=h_chr` là tab Bảng feed: chỉ bạn bè, nhóm và trang bạn theo dõi, xếp theo thời gian, không có bài gợi ý |
-| `MAX_POSTS` | `60` | Dừng khi thu đủ số bài này |
-| `SCROLL_ROUNDS` | `60` | Số vòng cuộn tối đa; bot cũng dừng sau 8 vòng liền không có bài mới |
-| `SCROLL_DELAY_MIN` / `SCROLL_DELAY_MAX` | `1` / `2.5` | Thời gian chờ ngẫu nhiên giữa các lần cuộn (giây) |
-| `MIN_POSTS` | `5` | Lướt feed mà thu ít hơn số này thì gửi cảnh báo (quét nguồn chỉ cảnh báo khi không có bài nào) |
-| `SCORE_BATCH_SIZE` | `8` | Số bài gửi cho LLM mỗi lần |
-| `LLM_CONCURRENCY` | `4` | Số lô bài gửi cho LLM cùng lúc khi chấm điểm |
-| `SCORE_THRESHOLD` | `7` | Điểm tối thiểu để bài vào digest |
-| `INTERESTS_FILE` | `interests.txt` | Mô tả sở thích mà LLM dùng để chấm điểm |
-| `SOURCE_DAYS` | `2` | Khi quét trang/nhóm đã chọn, chỉ lấy bài đăng trong số ngày gần nhất này (tính lùi từ lúc quét) |
-
-## Chỉnh chất lượng digest
-
-LLM chấm điểm hoàn toàn dựa vào `interests.txt`. Càng viết cụ thể thì kết quả càng sát: "AI: model mới, tool mã nguồn mở, kỹ thuật RAG/agent" cho kết quả tốt hơn nhiều so với chỉ ghi "AI". Nên liệt kê cả những gì bạn không muốn đọc.
-
-Nếu digest vẫn còn nhiều bài thừa, thử lần lượt các cách sau:
-1. Nâng `SCORE_THRESHOLD` lên 8.
-2. Đổi `LLM_MODEL`; xem danh sách tại `http://localhost:20128/v1/models`. Nên ghim một model cụ thể: combo như `auto/claude-sonnet` khi lỗi sẽ rơi xuống cả model yếu hơn (Haiku, Llama), làm điểm dao động giữa các lượt.
-3. Sửa thang điểm trong `SYSTEM_PROMPT` tại [fb_digest/scorer.py](fb_digest/scorer.py).
-
-## Cảnh báo qua Telegram
-
-| Cảnh báo | Nguyên nhân thường gặp | Cách xử lý |
-|---|---|---|
-| Facebook yêu cầu đăng nhập/checkpoint | Phiên hết hạn hoặc Facebook nghi ngờ | `fb-digest login` |
-| Chỉ thu được N bài | Facebook đổi DOM, hoặc feed không tải thêm khi cuộn | Xem các selector ở đầu `fb_digest/collector.js`; thử `HEADLESS=false` |
-| Thu bài lỗi / Chấm điểm lỗi | Chrome bị đóng, endpoint LLM không phản hồi | Xem `journalctl --user -u fb-digest` |
-| Không kết nối được Postgres | Sai `DATABASE_URL` hoặc server tắt | Kiểm tra DB |
-
-## Ghi chú kỹ thuật
-
-- **Nhận diện quảng cáo:** Facebook làm rối nhãn "Được tài trợ" nên chữ này gần như không có trong innerText. Thay vào đó, ở chỗ thời gian đăng bài, quảng cáo chỉ có một dòng chứa ký tự WORD JOINER (U+2060). `collector.js` bỏ các bài này trước khi lưu. Nếu Facebook đổi cách hiển thị, quảng cáo vẫn bị LLM bắt qua `is_ad`.
-- **API của trang quản lý:** [fb_digest/account.py](fb_digest/account.py) gọi API GraphQL nội bộ của Facebook bằng `fetch()` từ bên trong tab facebook.com đã đăng nhập, giống cách web Facebook gọi, nên dùng đúng phiên và token thật. Các `doc_id` được ghi lại từ web Facebook. Khi Facebook đổi `doc_id`, thao tác sẽ báo lỗi kèm tên API; lấy `doc_id` mới trong tab Network của DevTools rồi sửa hằng số tương ứng ở đầu file.
-- **Lọc trùng:** mỗi lượt, văn bản của bài có thể khác đi (thời gian tương đối, số like). Vì vậy khóa của bài là hash của các dòng dài nhất sau khi bỏ chữ số, tức phần thân bài.
-- **Đóng Chrome:** `stop()` của zendriver luôn SIGKILL Chrome sau 3 giây, làm mất cookie chưa kịp ghi. Bot tự đóng Chrome một cách từ tốn trước khi gọi `stop()`; xem `_close()` trong `collector.py`.
-- **Cửa sổ 1280×1400:** cửa sổ mặc định chỉ khoảng 800×600, khiến mỗi lần cuộn chưa qua hết một bài.
-- **LLM sau Cloudflare:** request có User-Agent riêng, vì UA mặc định `Python-urllib` bị Cloudflare trả 403.
-- **Router trả stream:** router tại `localhost:20128` trả SSE nếu không có `"stream": false`, nên scorer luôn gửi tham số này.
-- **Schema nằm trong prompt, không dùng `response_format`:** router chuyển `response_format` thành tool call cho Claude, và Claude trả `items` thành chuỗi JSON với dấu ngoặc kép không được escape. Router còn cache cả phản hồi hỏng đó, nên chạy lại cũng không khỏi.
-- **Giấy phép:** zendriver dùng AGPL-3.0. Dùng cá nhân thì không sao, nhưng cần lưu ý nếu phân phối lại.
-- **Điều khoản Facebook:** tự động hóa tài khoản thật là vi phạm điều khoản của Facebook. Hãy giữ tần suất thấp: vài lượt mỗi ngày, cuộn như người thật.
+[Apache-2.0](LICENSE)

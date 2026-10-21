@@ -4,7 +4,6 @@
 //             browses (webRequest), so they are current the moment Facebook rotates one;
 //   remote  - ops.json fetched from remoteOpsUrl, which the maintainer updates without a release;
 //   bundled - ops.json shipped inside the extension.
-// Feed templates (the pagination query a group or page timeline sends) also keep their variables.
 
 const LEARNED_KEY = 'learned';
 const REMOTE_KEY = 'remoteOps';
@@ -12,7 +11,7 @@ const TOUCH_MS = 3600e3; // refresh a learned entry's "last seen" at most hourly
 
 let bundled = null;
 let learned = null; // in-memory copy of storage[LEARNED_KEY]
-let watched = null; // friendly names worth learning: every op and feed name in bundled/remote
+let watched = null; // friendly names worth learning: every op name in bundled/remote
 const own = new Map(); // "name|doc_id" -> requests this extension is sending right now
 
 export async function bundledOps() {
@@ -56,13 +55,10 @@ export async function refreshRemote(url) {
 async function watchedNames() {
   if (!watched) {
     const regs = [await bundledOps(), (await remoteOps())?.data].filter(Boolean);
-    watched = new Set(regs.flatMap((r) => [...Object.values(r.ops || {}), ...Object.values(r.feed || {})].map((o) => o.name)));
+    watched = new Set(regs.flatMap((r) => Object.values(r.ops || {}).map((o) => o.name)));
   }
   return watched;
 }
-
-const isFeed = async (name) => [await bundledOps(), (await remoteOps())?.data]
-  .some((r) => Object.values(r?.feed || {}).some((t) => t.name === name));
 
 // Our own calls go through webRequest too; never learn from them, they may carry a stale doc_id.
 export function markOwn(name, docId, delta) {
@@ -90,26 +86,17 @@ export function observe(details) {
   const name = get('fb_api_req_friendly_name');
   const docId = get('doc_id');
   if (!name || !/^\d+$/.test(docId || '') || own.has(`${name}|${docId}`)) return;
-  const variables = get('variables');
-  learn(name, docId, variables).catch((err) => console.warn('learn', name, err));
+  learn(name, docId).catch((err) => console.warn('learn', name, err));
 }
 
-async function learn(name, docId, variablesText) {
+async function learn(name, docId) {
   if (!(await watchedNames()).has(name)) return;
   const map = await getLearned();
   const old = map[name];
   const now = Date.now();
-  let variables = null;
-  if (await isFeed(name)) {
-    try { variables = JSON.parse(variablesText); } catch { return; }
-  }
   if (old && old.doc_id === docId && now - old.at < TOUCH_MS) return;
-  map[name] = { doc_id: docId, at: now, ...(variables ? { variables } : {}) };
+  map[name] = { doc_id: docId, at: now };
   await chrome.storage.local.set({ [LEARNED_KEY]: map });
-}
-
-export async function learnedAt(name) {
-  return (await getLearned())[name]?.at || 0;
 }
 
 function dedupe(list) {
@@ -141,32 +128,14 @@ export async function candidates(key) {
   return dedupe(list);
 }
 
-// Feed templates {name, doc_id, variables, from, at} for "group" or "page", newest first.
-export async function feedCandidates(kind) {
-  const b = await bundledOps();
-  const remote = (await remoteOps())?.data;
-  const map = await getLearned();
-  const list = [];
-  for (const [reg, from] of [[remote, 'remote'], [b, 'bundled']]) {
-    const t = reg?.feed?.[kind];
-    if (t?.variables) list.push({ ...t, from, at: registryAt(reg) });
-  }
-  for (const name of new Set(list.map((c) => c.name))) {
-    const l = map[name];
-    if (l?.variables) list.push({ name, doc_id: l.doc_id, variables: l.variables, from: 'learned', at: l.at + 1 });
-  }
-  return dedupe(list);
-}
-
 export async function status() {
   const b = await bundledOps();
   const remote = await remoteOps();
   const keys = [...new Set([...Object.keys(b.ops), ...Object.keys(remote?.data?.ops || {})])];
   const rows = [];
   for (const key of keys) rows.push({ key, candidates: await candidates(key) });
-  for (const kind of ['home', 'group', 'page']) rows.push({ key: `feed:${kind}`, candidates: await feedCandidates(kind) });
   return {
-    rows: rows.map((r) => ({ key: r.key, candidates: r.candidates.map(({ variables, ...c }) => c) })),
+    rows,
     remote: remote && { url: remote.url, fetched_at: remote.fetched_at, error: remote.error, updated: remote.data?.updated },
     bundled_updated: b.updated,
   };

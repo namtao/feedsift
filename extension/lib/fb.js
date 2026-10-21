@@ -1,6 +1,5 @@
-// Talk to Facebook with the person's own logged-in session. API calls and page fetches run from the
-// service worker, so nothing opens on screen; only work that must render and scroll a page (the home
-// feed, or opening a source to learn its feed query) uses a small window.
+// Talk to Facebook with the person's own logged-in session, for the friends, pages and groups lists.
+// API calls and page fetches run from the service worker, so nothing opens on screen.
 
 import { candidates, markOwn } from './ops.js';
 
@@ -15,9 +14,52 @@ const HEADER_RULE_ID = 1;
 
 export class FacebookError extends Error {}
 export class SessionExpired extends FacebookError {}
+// A FacebookHalt means "stop talking to Facebook now": callers that otherwise fall back or skip to the
+// next item must let it through, or a flagged account keeps getting requests.
+export class FacebookHalt extends FacebookError {}
+export class FacebookBlocked extends FacebookHalt {} // Facebook pushed back; a cooldown has just started
+export class FacebookCooldown extends FacebookHalt {} // a cooldown is already running
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const uniform = (a, b) => a + Math.random() * (b - a);
+
+// --- Cooldown ------------------------------------------------------------------------------------
+// Once Facebook throttles the account or asks for verification, every further automated request makes
+// it worse. The cooldown keeps all Facebook work stopped until it ends or the person clears it.
+const COOLDOWN_MS = 24 * 3600e3;
+const COOLDOWN_KEY = 'fbCooldown';
+// Matched only against the error text of a reply that carries no data (see throttleReason), so a post
+// that merely talks about rate limits cannot trip it.
+const THROTTLED = /rate.?limit|temporarily (blocked|restricted)|tạm thời bị chặn|bị chặn tạm thời|checkpoint/i;
+
+const untilText = (until) => new Date(until).toLocaleString('vi-VN');
+
+export async function activeCooldown() {
+  const { [COOLDOWN_KEY]: c } = await chrome.storage.local.get(COOLDOWN_KEY);
+  return c && c.until > Date.now() ? c : null;
+}
+
+export const clearCooldown = () => chrome.storage.local.remove(COOLDOWN_KEY);
+
+// Start a cooldown and return the error that reports it; callers `throw await trip(...)`.
+export async function trip(reason, ms = COOLDOWN_MS) {
+  const until = Date.now() + ms;
+  await chrome.storage.local.set({ [COOLDOWN_KEY]: { until, reason } });
+  return new FacebookBlocked(`${reason}. Extension tạm nghỉ mọi thao tác Facebook đến ${untilText(until)}. `
+    + 'Mở Facebook trên trình duyệt để kiểm tra tài khoản; xử lý xong có thể bỏ thời gian nghỉ ở tab Cài đặt.');
+}
+
+// Why an API reply says the account is being throttled ('' when it does not). Only replies without data
+// count: an ordinary reply may hold thousands of words of other people's text.
+function throttleReason(status, text) {
+  if (status === 429) return 'Facebook trả HTTP 429';
+  let body;
+  try { body = JSON.parse(text.replace(/^for \(;;\);/, '').split('\n', 1)[0]); } catch { return ''; }
+  if (!body || body.data) return '';
+  const msg = [body.errorSummary, body.errorDescription, body.errors?.[0]?.message, body.errors?.[0]?.summary]
+    .filter((m) => typeof m === 'string').join(' ');
+  return THROTTLED.test(msg) ? `Facebook báo giới hạn/chặn: ${msg.slice(0, 150)}` : '';
+}
 
 // The service worker's requests carry Origin: chrome-extension://…, which Facebook's API rejects.
 // A session rule gives this extension's own tab-less requests the site's origin, as the web app has.
@@ -48,6 +90,11 @@ export async function fetchPage(path) {
 
 // The person's id and the page tokens every API call needs, read from the home page.
 export async function apiSession() {
+  const cooling = await activeCooldown();
+  if (cooling) {
+    throw new FacebookCooldown(`Facebook đang tạm nghỉ đến ${untilText(cooling.until)} (${cooling.reason}). `
+      + 'Nếu bạn đã xử lý xong trên Facebook, bỏ thời gian nghỉ ở tab Cài đặt.');
+  }
   await ensureHeaderRule();
   let page;
   try {
@@ -56,6 +103,8 @@ export async function apiSession() {
     throw new FacebookError(`Không kết nối được Facebook: ${err.message}`);
   }
   const { url, html } = page;
+  // Facebook asking for verification is the clearest warning there is: stop all automation.
+  if (/^\/(checkpoint|two_step_verification)/.test(new URL(url).pathname)) throw await trip('Facebook yêu cầu xác minh tài khoản');
   const user = (html.match(/"USER_ID":"(\d+)"/) || [])[1];
   const dtsg = (html.match(/"DTSGInitialData",\[\],\{"token":"([^"]+)"/) || [])[1];
   const lsd = (html.match(/"LSD",\[\],\{"token":"([^"]+)"/) || [])[1] || '';
@@ -63,100 +112,6 @@ export async function apiSession() {
     throw new SessionExpired(NOT_LOGGED_IN);
   }
   return { user, dtsg, lsd };
-}
-
-export async function exec(tabId, func, args = []) {
-  const [res] = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func, args });
-  return res?.result;
-}
-
-function sessionInfo() {
-  return {
-    user: (document.cookie.match(/(?:^|; )c_user=(\d+)/) || [])[1] || '',
-    loggedOut: /^\/(login|checkpoint|two_step_verification)/.test(location.pathname)
-      || !!document.querySelector('input[name="pass"]'),
-  };
-}
-
-export async function checkSession(tabId) {
-  const info = await exec(tabId, sessionInfo);
-  if (!info?.user || info.loggedOut) throw new SessionExpired(NOT_LOGGED_IN);
-  return info.user;
-}
-
-// Lazy-loading lists only grow while the page renders, which a background tab does not do, so
-// anything that scrolls gets a small window of its own.
-const WINDOW_CLOSED = 'Cửa sổ Facebook mà extension mở để quét đã bị đóng nên tác vụ dừng lại. '
-  + 'Cứ để cửa sổ đó chạy, nó tự đóng khi xong.';
-
-class ScanWindow {
-  constructor(created) {
-    this.windowId = created.id;
-    this.tabId = created.tabs[0].id;
-    this.closed = false;
-    // Chrome may swap in a prerendered tab with a new id when the page navigates.
-    this.onReplaced = (added, removed) => { if (removed === this.tabId) this.tabId = added; };
-    this.onRemoved = (id) => { if (id === this.windowId) this.closed = true; };
-    chrome.tabs.onReplaced.addListener(this.onReplaced);
-    chrome.windows.onRemoved.addListener(this.onRemoved);
-  }
-
-  // Runs fn, turning the "No tab with id" style errors of a closed window into a clear message.
-  async guard(fn) {
-    if (this.closed) throw new FacebookError(WINDOW_CLOSED);
-    try {
-      return await fn();
-    } catch (err) {
-      const gone = this.closed || !(await chrome.windows.get(this.windowId).catch(() => null));
-      throw gone ? new FacebookError(WINDOW_CLOSED) : err;
-    }
-  }
-
-  exec(func, args = []) {
-    return this.guard(() => exec(this.tabId, func, args));
-  }
-
-  waitComplete() {
-    return this.guard(async () => {
-      const end = Date.now() + 45000;
-      while (Date.now() < end) {
-        if ((await chrome.tabs.get(this.tabId)).status === 'complete') return;
-        await sleep(500);
-      }
-      throw new FacebookError('Trang Facebook tải quá lâu.');
-    });
-  }
-
-  async navigate(url) {
-    await this.guard(() => chrome.tabs.update(this.tabId, { url }));
-    await sleep(800);
-    await this.waitComplete();
-  }
-
-  async close() {
-    chrome.tabs.onReplaced.removeListener(this.onReplaced);
-    chrome.windows.onRemoved.removeListener(this.onRemoved);
-    if (!this.closed) await chrome.windows.remove(this.windowId).catch(() => {});
-  }
-}
-
-export async function openWindow(url) {
-  const win = new ScanWindow(await chrome.windows.create({ url, type: 'popup', width: 1100, height: 900, focused: true }));
-  try {
-    await win.waitComplete();
-  } catch (err) {
-    await win.close();
-    throw err;
-  }
-  return win;
-}
-
-export async function closeWindow(win) {
-  await win?.close();
-}
-
-export function scrollBy(fraction) {
-  window.scrollBy({ top: Math.round(window.innerHeight * fraction), behavior: 'smooth' });
 }
 
 // POST a GraphQL request the way the web app does; returns {status, text}.
@@ -172,8 +127,12 @@ export async function graphql(ctx, name, docId, variables) {
       method: 'POST', body, credentials: 'include',
       headers: { 'x-fb-friendly-name': name, 'x-fb-lsd': ctx.lsd },
     });
-    return { status: res.status, text: await res.text() };
+    const reply = { status: res.status, text: await res.text() };
+    const throttled = throttleReason(reply.status, reply.text);
+    if (throttled) throw await trip(throttled);
+    return reply;
   } catch (err) {
+    if (err instanceof FacebookError) throw err;
     throw new FacebookError(`${name}: không gọi được API Facebook: ${err.message}`);
   } finally {
     // The webRequest event for this call has fired by the time the response is read.
