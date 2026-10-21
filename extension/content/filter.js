@@ -30,10 +30,14 @@
   const FOLLOW_LINE = /(^|\n|·\s*)(theo dõi|follow)\s*(\n|$)/i;
   const JOIN_LABEL = /^(tham gia( nhóm)?|join( group)?)$/i;
   const JOIN_LINE = /(^|\n|·\s*)(tham gia|join)\s*(\n|$)/i;
-  // The heading of a block that recommends groups.
-  const GROUP_SUGGESTION = /^\s*(nhóm gợi ý cho bạn|nhóm gợi ý|nhóm bạn có thể (thích|quan tâm|tham gia)|groups you (may|might) (like|be interested in|want to join)|suggested groups|discover groups|khám phá nhóm)\s*$/im;
+  // The heading of a block that recommends groups ("Gợi ý nhóm" on a Vietnamese account).
+  const GROUP_SUGGESTION = /^\s*(gợi ý nhóm|nhóm gợi ý cho bạn|nhóm gợi ý|nhóm bạn có thể (thích|quan tâm|tham gia)|groups you (may|might) (like|be interested in|want to join)|suggested groups|discover groups|khám phá nhóm)\s*$/im;
   const HEADER_PX = 72;
   const HEADER_CHARS = 120;
+
+  // The group carousel puts a join button and a "remove suggestion" button on every card, not in a header.
+  const REMOVE_SUGGESTED_GROUP = '[aria-label^="Gỡ nhóm gợi ý"], [aria-label^="Remove suggested group"]';
+  const JOIN_BUTTON = '[aria-label="Tham gia nhóm"], [aria-label="Join group"]';
 
   // Buttons and links in the top of a post, for the follow/join rules and the diagnostic report.
   function headerButtons(el) {
@@ -82,7 +86,8 @@
     isSuggested: (el, text) => SUGGESTED.test(text),
     isFriendSuggestion: (el, text) => FRIEND_SUGGESTION.test(text),
     isNotFollowed: (el, text) => headerButtons(el).some((l) => FOLLOW_LABEL.test(l)) || FOLLOW_LINE.test(text.slice(0, HEADER_CHARS)),
-    isGroupSuggestion: (el, text) => GROUP_SUGGESTION.test(text) || headerButtons(el).some((l) => JOIN_LABEL.test(l))
+    isGroupSuggestion: (el, text) => GROUP_SUGGESTION.test(text) || !!el.querySelector(REMOVE_SUGGESTED_GROUP)
+      || el.querySelectorAll(JOIN_BUTTON).length >= 2 || headerButtons(el).some((l) => JOIN_LABEL.test(l))
       || JOIN_LINE.test(text.slice(0, HEADER_CHARS)),
   };
   // Selectors for X are from its public markup and have not been checked against a logged-in session.

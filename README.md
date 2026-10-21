@@ -18,7 +18,7 @@ FeedSift là extension Chrome (Manifest V3) lọc feed ngay khi bạn lướt Fa
 | Gợi ý kết bạn ("Những người bạn có thể biết") | ✓ | |
 | Bài gợi ý ("Gợi ý cho bạn") | ✓ | |
 | Trang chưa theo dõi (nút "Theo dõi" ở đầu bài) | ✓ | |
-| Gợi ý nhóm (khối "Nhóm gợi ý cho bạn" và bài từ nhóm chưa tham gia) | ✓ | |
+| Gợi ý nhóm (khối "Gợi ý nhóm" và bài từ nhóm chưa tham gia) | ✓ | |
 | Bài hỏi Grok (tweet gọi `@grok` và câu trả lời của chính Grok) | | ✓ |
 | Chấm điểm bằng LLM (tùy chọn) | ✓ dùng chung | ✓ dùng chung |
 
